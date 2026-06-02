@@ -5,6 +5,9 @@
 Turn your **lifetime token usage** in Claude Code into XP: shows your level `Lv.`, a chūnibyō-style
 Japanese title, and an XP bar — plus a layer of **靈力 (rei) RPG buff events** and a **cosmetics shop**.
 
+![cc-xp statusline](./docs/screenshot.png)
+
+<sub>(plain-text approximation)</sub>
 ```
 [✻ Opus 4.8 (1M) - high] ⬩  my-project |  main
 [🌌️ 夜天ノ裁定者] Lv. 168 ⬩ 4.9B | ctx 7% | 5hr 0% | weekly 0%
