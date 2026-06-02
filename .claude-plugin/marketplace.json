@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-marketplace.json",
+  "name": "cc-xp",
+  "owner": {
+    "name": "papaChong"
+  },
+  "description": "cc-xp — gamified Claude Code XP statusline (Lv./稱號/XP + 靈力 RPG events)",
+  "metadata": {
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "cc-xp",
+      "source": "./plugins/cc-xp",
+      "description": "Gamified statusline: level/title/XP bar from your lifetime token usage, plus 靈力 buff events and a cosmetics shop.",
+      "version": "0.1.0",
+      "author": { "name": "papaChong" },
+      "keywords": ["statusline", "gamification", "rpg", "ccusage", "tokens"],
+      "category": "productivity"
+    }
+  ]
+}
