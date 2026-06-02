@@ -1,5 +1,7 @@
 # Contributing to cc-xp
 
+繁體中文 ｜ [English](./CONTRIBUTING.en.md)
+
 歡迎貢獻！本專案採 **fork + Pull Request** 流程，任何人都不能直接 push 到本 repo。
 
 ## 分支模型

@@ -732,6 +732,9 @@ def cmd_list():
             print(f"  🔒 {_pad(sid, 14)}{_pad(name, 20)}{cost:,} 靈")
 
 
+_ALIAS_MARKER = "# >>> cc-xp >>>"
+
+
 def _shell_profile() -> str:
     sh = os.environ.get("SHELL", "")
     if "zsh" in sh:
@@ -741,18 +744,79 @@ def _shell_profile() -> str:
     return os.path.join(HOME, ".profile")
 
 
+def _powershell_profile_path():
+    """問 PowerShell 自己的 $PROFILE 路徑（Windows）。失敗回 None。"""
+    override = os.environ.get("CC_XP_PS_PROFILE")  # 測試用：避免動到真實 profile
+    if override:
+        return override
+    import subprocess
+    for exe in ("pwsh", "powershell"):
+        try:
+            out = subprocess.run([exe, "-NoProfile", "-Command", "$PROFILE"],
+                                 capture_output=True, text=True, timeout=15)
+            p = out.stdout.strip()
+            if out.returncode == 0 and p:
+                return p
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
+def _install_launcher(stable: str, py: str) -> str:
+    """建立可在 PATH 用的 cc-xp 啟動器；回傳結果說明字串。冪等。"""
+    if os.name == "nt":  # Windows
+        cmd_path = os.path.join(os.path.dirname(stable), "cc-xp.cmd")
+        with open(cmd_path, "w", encoding="utf-8", newline="\r\n") as fh:
+            fh.write(f'@echo off\n"{py}" "{stable}" %*\n')
+        notes = [f"已建立 {cmd_path}（把該資料夾加入 PATH 即可用 cc-xp）"]
+        prof = _powershell_profile_path()
+        if prof:
+            try:
+                existing = ""
+                if os.path.exists(prof):
+                    with open(prof, encoding="utf-8") as fh:
+                        existing = fh.read()
+                if _ALIAS_MARKER not in existing:
+                    os.makedirs(os.path.dirname(prof), exist_ok=True)
+                    with open(prof, "a", encoding="utf-8") as fh:
+                        fh.write(f'\n{_ALIAS_MARKER}\nfunction cc-xp {{ & "{py}" "{stable}" @args }}\n'
+                                 f'# <<< cc-xp <<<\n')
+                    notes.append(f"已加入 PowerShell $PROFILE 函式（{prof}）")
+                else:
+                    notes.append(f"PowerShell $PROFILE 已有 cc-xp")
+            except OSError:
+                pass
+        return "；".join(notes)
+    # macOS / Linux
+    prof = _shell_profile()
+    try:
+        with open(prof, encoding="utf-8") as fh:
+            existing = fh.read()
+    except OSError:
+        existing = ""
+    if _ALIAS_MARKER in existing:
+        return f"已存在於 {prof}"
+    with open(prof, "a", encoding="utf-8") as fh:
+        fh.write(f'\n{_ALIAS_MARKER}\ncc-xp() {{ "{py}" "{stable}" "$@"; }}\n# <<< cc-xp <<<\n')
+    return f"已加到 {prof}"
+
+
 def cmd_install(no_hook=False):
-    """把自己安裝成穩定路徑，並寫好 statusLine + hook + shell 別名（皆冪等）。"""
+    """把自己裝成穩定路徑，並寫好 statusLine + hook + 啟動器（跨平台、皆冪等）。"""
     import shutil
+    py = sys.executable or "python3"
     stable_dir = os.path.join(HOME, ".claude", "cc-xp")
     stable = os.path.join(stable_dir, "xp-statusline.py")
     os.makedirs(stable_dir, exist_ok=True)
     src = os.path.realpath(__file__)
     if src != os.path.realpath(stable):
         shutil.copyfile(src, stable)
-    os.chmod(stable, 0o755)
+    try:
+        os.chmod(stable, 0o755)
+    except OSError:
+        pass
 
-    # settings.json：備份 → 設 statusLine（+ hook）
+    # settings.json：備份 → 設 statusLine（+ hook）。用 sys.executable 絕對路徑，免靠 PATH。
     settings_path = os.path.join(HOME, ".claude", "settings.json")
     try:
         with open(settings_path, encoding="utf-8") as fh:
@@ -764,7 +828,7 @@ def cmd_install(no_hook=False):
     if os.path.exists(settings_path):
         shutil.copyfile(settings_path, settings_path + ".cc-xp.bak")
 
-    settings["statusLine"] = {"type": "command", "command": f'python3 "{stable}"', "padding": 0}
+    settings["statusLine"] = {"type": "command", "command": f'"{py}" "{stable}"', "padding": 0}
     hook_added = False
     if not no_hook:
         hooks = settings.setdefault("hooks", {})
@@ -776,7 +840,7 @@ def cmd_install(no_hook=False):
         )
         if not already:
             ups.append({"hooks": [{"type": "command",
-                                   "command": f'python3 "{stable}" tick', "timeout": 10}]})
+                                   "command": f'"{py}" "{stable}" tick', "timeout": 10}]})
             hook_added = True
 
     tmp = settings_path + ".tmp"
@@ -785,31 +849,27 @@ def cmd_install(no_hook=False):
         json.dump(settings, fh, indent=2, ensure_ascii=False)
     os.replace(tmp, settings_path)
 
-    # shell 別名（冪等：marker 已存在就跳過）
-    prof = _shell_profile()
-    marker = "# >>> cc-xp >>>"
-    try:
-        with open(prof, encoding="utf-8") as fh:
-            existing = fh.read()
-    except OSError:
-        existing = ""
-    alias_added = marker not in existing
-    if alias_added:
-        with open(prof, "a", encoding="utf-8") as fh:
-            fh.write(f'\n{marker}\ncc-xp() {{ python3 "{stable}" "$@"; }}\n# <<< cc-xp <<<\n')
+    launcher_note = _install_launcher(stable, py)
 
     print("✅ cc-xp 安裝完成")
     print(f"  腳本        ：{stable}")
     print(f"  statusLine  ：已寫入 {settings_path}（備份 .cc-xp.bak）")
     print(f"  事件 hook   ：{'已加入' if hook_added else ('略過(--no-hook)' if no_hook else '已存在')}")
-    print(f"  shell 別名  ：{'已加到 ' + prof if alias_added else '已存在於 ' + prof}")
-    print("  → 重開終端（或 source 設定檔）讓 cc-xp 生效；重啟 Claude Code 讓 statusLine/hook 生效")
+    print(f"  cc-xp 指令  ：{launcher_note}")
+    print("  → 重開終端讓 cc-xp 生效；重啟 Claude Code 讓 statusLine/hook 生效")
 
 
 # ───────────────────────────────── 主流程 ─────────────────────────────────
 
 
 def main():
+    # 強制 UTF-8 輸出：Windows 預設 stdout 用系統碼頁(如 cp950)，印 emoji/CJK 會 UnicodeEncodeError。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     arg = sys.argv[1] if len(sys.argv) > 1 else None
 
     # ── 非 render 子指令 ──

@@ -1,5 +1,7 @@
 # cc-xp — 把 Claude Code 變成 RPG 的 statusline
 
+繁體中文 ｜ [English](./README.en.md)
+
 把你在 Claude Code 的**終生 token 消耗**變成經驗值，顯示等級 `Lv.`、日式中二稱號、XP 進度條，
 再加一層 **靈力 RPG buff 事件** 與 **外觀商店**。
 
@@ -22,16 +24,23 @@
 
 ## 安裝（一行搞定）
 
+**macOS / Linux**
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/papaChong1229/cc-xp/main/install.sh)
 ```
 
-這會：下載腳本到 `~/.claude/cc-xp/` → 自動寫好 `~/.claude/settings.json` 的 `statusLine` 與
-`UserPromptSubmit` hook（**會先備份成 `settings.json.cc-xp.bak`、保留你既有設定**）→ 加一個 shell 別名 `cc-xp`。
+**Windows（PowerShell）**
+```powershell
+irm https://raw.githubusercontent.com/papaChong1229/cc-xp/main/install.ps1 | iex
+```
 
-裝完：**重開終端**（讓 `cc-xp` 別名生效）+ **重啟 Claude Code**（讓 statusLine/hook 生效）。
+兩者都會：下載腳本到 `~/.claude/cc-xp/` → 自動寫好 `~/.claude/settings.json` 的 `statusLine` 與
+`UserPromptSubmit` hook（**會先備份成 `settings.json.cc-xp.bak`、保留你既有設定**）→ 設好 `cc-xp` 指令
+（mac/Linux 加 shell 別名；Windows 建 `cc-xp.cmd` + PowerShell `$PROFILE` 函式）。
 
-**更新**：重跑同一行即可（會抓最新版、冪等不重複寫）。
+> 跨平台關鍵：真正的安裝邏輯是 Python（`cc-xp install`），用 `sys.executable` 絕對路徑寫入設定，不靠 `python3` 在 PATH。bootstrap 只負責下載 + 啟動。
+
+裝完：**重開終端** + **重啟 Claude Code**。**更新**：重跑同一行即可（抓最新版、冪等）。
 
 <details>
 <summary>替代：用 Claude Code Plugin 安裝</summary>
