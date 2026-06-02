@@ -681,6 +681,131 @@ def cmd_unequip(slot):
     print(f"已卸下：{slot}")
 
 
+COMMANDS = [
+    ("install",          "一鍵設定 statusLine + 事件 hook + shell 別名 cc-xp"),
+    ("install --no-hook", "同上但不設 hook（給用 plugin 提供 hook 的人）"),
+    ("shop",             "靈力商店：列出可購外觀 + 餘額"),
+    ("list",             "看自己擁有 / 已裝備 / 未擁有的外觀"),
+    ("buy <id>",         "花靈力購買外觀"),
+    ("equip <id>",       "裝備已擁有的外觀"),
+    ("unequip <slot>",   "卸下外觀（slot: title_variant/icon_variant/bar_theme/effect）"),
+    ("events on|off",    "開 / 關整套 RPG 事件（關閉時 statusline 退回純資訊型）"),
+    ("help",             "顯示這個說明"),
+    ("tick",             "（內部）事件引擎 tick，由 UserPromptSubmit hook 自動呼叫"),
+    ("(無參數)",          "（內部）輸出 statusline，由 Claude Code 自動呼叫"),
+]
+
+
+def cmd_help():
+    print("cc-xp — Claude Code RPG statusline\n")
+    print("用法：cc-xp <指令> [參數]\n")
+    for name, desc in COMMANDS:
+        print(f"  {_pad(name, 20)}{desc}")
+    print("\nstate: ~/.claude/statusline/.cc-xp.dat（簽章）　開關: xp-config.json")
+
+
+def _is_equipped(eq, slot, val):
+    return eq.get(slot) == (val if slot in ("bar_theme", "effect") else "alt")
+
+
+def cmd_list():
+    st = load_state()
+    owned, eq = st["unlocked"], st["equipped"]
+    print(f"靈力：{_fmt_rei(st['rei'])}　霊格：{reikaku_name(st['rei_earned_total']) or '—'}\n")
+    print("【已裝備】")
+    shown = False
+    for sid, (slot, name, cost, val) in SHOP.items():
+        if sid in owned and _is_equipped(eq, slot, val):
+            print(f"  ✅ {name}"); shown = True
+    if not shown:
+        print("  （皆為預設外觀）")
+    print("【已擁有・未裝備】")
+    shown = False
+    for sid, (slot, name, cost, val) in SHOP.items():
+        if sid in owned and not _is_equipped(eq, slot, val):
+            print(f"  🔓 {_pad(sid, 14)}{name}"); shown = True
+    if not shown:
+        print("  （無）")
+    print("【未擁有】")
+    for sid, (slot, name, cost, val) in SHOP.items():
+        if sid not in owned:
+            print(f"  🔒 {_pad(sid, 14)}{_pad(name, 20)}{cost:,} 靈")
+
+
+def _shell_profile() -> str:
+    sh = os.environ.get("SHELL", "")
+    if "zsh" in sh:
+        return os.path.join(HOME, ".zshrc")
+    if "bash" in sh:
+        return os.path.join(HOME, ".bashrc")
+    return os.path.join(HOME, ".profile")
+
+
+def cmd_install(no_hook=False):
+    """把自己安裝成穩定路徑，並寫好 statusLine + hook + shell 別名（皆冪等）。"""
+    import shutil
+    stable_dir = os.path.join(HOME, ".claude", "cc-xp")
+    stable = os.path.join(stable_dir, "xp-statusline.py")
+    os.makedirs(stable_dir, exist_ok=True)
+    src = os.path.realpath(__file__)
+    if src != os.path.realpath(stable):
+        shutil.copyfile(src, stable)
+    os.chmod(stable, 0o755)
+
+    # settings.json：備份 → 設 statusLine（+ hook）
+    settings_path = os.path.join(HOME, ".claude", "settings.json")
+    try:
+        with open(settings_path, encoding="utf-8") as fh:
+            settings = json.load(fh)
+        if not isinstance(settings, dict):
+            settings = {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        settings = {}
+    if os.path.exists(settings_path):
+        shutil.copyfile(settings_path, settings_path + ".cc-xp.bak")
+
+    settings["statusLine"] = {"type": "command", "command": f'python3 "{stable}"', "padding": 0}
+    hook_added = False
+    if not no_hook:
+        hooks = settings.setdefault("hooks", {})
+        ups = hooks.setdefault("UserPromptSubmit", [])
+        already = any(
+            "xp-statusline.py" in h.get("command", "") and "tick" in h.get("command", "")
+            for grp in ups if isinstance(grp, dict)
+            for h in grp.get("hooks", []) if isinstance(h, dict)
+        )
+        if not already:
+            ups.append({"hooks": [{"type": "command",
+                                   "command": f'python3 "{stable}" tick', "timeout": 10}]})
+            hook_added = True
+
+    tmp = settings_path + ".tmp"
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(settings, fh, indent=2, ensure_ascii=False)
+    os.replace(tmp, settings_path)
+
+    # shell 別名（冪等：marker 已存在就跳過）
+    prof = _shell_profile()
+    marker = "# >>> cc-xp >>>"
+    try:
+        with open(prof, encoding="utf-8") as fh:
+            existing = fh.read()
+    except OSError:
+        existing = ""
+    alias_added = marker not in existing
+    if alias_added:
+        with open(prof, "a", encoding="utf-8") as fh:
+            fh.write(f'\n{marker}\ncc-xp() {{ python3 "{stable}" "$@"; }}\n# <<< cc-xp <<<\n')
+
+    print("✅ cc-xp 安裝完成")
+    print(f"  腳本        ：{stable}")
+    print(f"  statusLine  ：已寫入 {settings_path}（備份 .cc-xp.bak）")
+    print(f"  事件 hook   ：{'已加入' if hook_added else ('略過(--no-hook)' if no_hook else '已存在')}")
+    print(f"  shell 別名  ：{'已加到 ' + prof if alias_added else '已存在於 ' + prof}")
+    print("  → 重開終端（或 source 設定檔）讓 cc-xp 生效；重啟 Claude Code 讓 statusLine/hook 生效")
+
+
 # ───────────────────────────────── 主流程 ─────────────────────────────────
 
 
@@ -695,6 +820,15 @@ def main():
         return
     if arg == "tick":
         cmd_tick()
+        return
+    if arg in ("help", "-h", "--help"):
+        cmd_help()
+        return
+    if arg == "install":
+        cmd_install(no_hook=("--no-hook" in sys.argv[2:]))
+        return
+    if arg == "list":
+        cmd_list()
         return
     if arg == "events":
         cmd_events(sys.argv[2] if len(sys.argv) > 2 else None)

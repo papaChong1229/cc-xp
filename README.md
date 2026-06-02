@@ -1,6 +1,6 @@
 # cc-xp — 把 Claude Code 變成 RPG 的 statusline
 
-把你在 Claude Code 的**終生 token 消耗**變成經驗值，顯示等級 `Lv.`、日本中二風稱號、XP 進度條，
+把你在 Claude Code 的**終生 token 消耗**變成經驗值，顯示等級 `Lv.`、日式中二稱號、XP 進度條，
 再加一層 **靈力 RPG buff 事件** 與 **外觀商店**。
 
 ```
@@ -20,45 +20,40 @@
 - [`ccusage`](https://github.com/ryoppippi/ccusage)（可 `bunx ccusage` 免安裝，或 `npm i -g ccusage`）
 - **Nerd Font** + 支援 emoji 的終端（icon 用）
 
-## 安裝
+## 安裝（一行搞定）
 
 ```bash
-# 1) 加入 marketplace
+bash <(curl -fsSL https://raw.githubusercontent.com/papaChong1229/cc-xp/main/install.sh)
+```
+
+這會：下載腳本到 `~/.claude/cc-xp/` → 自動寫好 `~/.claude/settings.json` 的 `statusLine` 與
+`UserPromptSubmit` hook（**會先備份成 `settings.json.cc-xp.bak`、保留你既有設定**）→ 加一個 shell 別名 `cc-xp`。
+
+裝完：**重開終端**（讓 `cc-xp` 別名生效）+ **重啟 Claude Code**（讓 statusLine/hook 生效）。
+
+**更新**：重跑同一行即可（會抓最新版、冪等不重複寫）。
+
+<details>
+<summary>替代：用 Claude Code Plugin 安裝</summary>
+
+```bash
 /plugin marketplace add papaChong1229/cc-xp
-# 2) 安裝 plugin（含 UserPromptSubmit hook，自動啟用）
 /plugin install cc-xp@cc-xp
 ```
 
-### 啟用 statusline（一次性手動步驟）
-
-> Claude Code 的 `statusLine` 只能由使用者自己設定，plugin 無法代設。
-
-在你的 `~/.claude/settings.json` 加：
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/xp-statusline.py\"",
-    "padding": 0
-  }
-}
-```
-
-> 若你的環境 `${CLAUDE_PLUGIN_ROOT}` 在 statusLine 不展開，改用實際路徑
-> `~/.claude/plugins/cache/cc-xp/.../scripts/xp-statusline.py`，或把 `scripts/xp-statusline.py`
-> 複製到固定位置（如 `~/.claude/scripts/`）後指向它。
-
-## 用法（shop / buy / equip）
-
-建議在你的 shell 設一個別名：
+plugin 會提供 `UserPromptSubmit` hook。但 **`statusLine` 無法由 plugin 代設**，仍需執行一次安裝指令來寫 statusLine + 別名（hook 已由 plugin 提供，故用 `--no-hook`）：
 
 ```bash
-cc-xp() { python3 "<plugin>/scripts/xp-statusline.py" "$@"; }
+python3 "$(ls ~/.claude/plugins/cache/cc-xp*/plugins/cc-xp/scripts/xp-statusline.py | head -1)" install --no-hook
 ```
+</details>
+
+## 用法
 
 ```bash
-cc-xp shop                # 看商店 + 靈力餘額
+cc-xp help                # 看所有指令 + 說明
+cc-xp list                # 看自己擁有 / 已裝備 / 未擁有的外觀
+cc-xp shop                # 靈力商店 + 餘額
 cc-xp buy bar_purple      # 花靈力解鎖外觀
 cc-xp equip bar_purple    # 裝備
 cc-xp unequip bar_theme   # 卸下
@@ -75,12 +70,28 @@ cc-xp events off          # 關閉整套 RPG 事件（statusline 退回純資訊
 
 ## 自訂
 
-打開 `scripts/xp-statusline.py` 最上方常數區：`TITLES`（稱號 + 異名）、`BUFFS`（事件池）、`SHOP`（商店）、
+打開 `~/.claude/cc-xp/xp-statusline.py` 最上方常數區：`TITLES`（稱號 + 異名）、`BUFFS`（事件池）、`SHOP`（商店）、
 `REI_RATE`（靈力速率）、`BAR_THEMES`、`C_*`（顏色）、`LINE_SPACING`、升級曲線 `F/A/R`。
 
 ## Roadmap
 
-- 轉蛋、靈力當事件燃料、Quest 型挑戰事件（「Y 分內消耗 X token」）。
+### v1（已實裝）
+- ✅ Lv. / 日式中二稱號 / XP 進度條，XP = claude-only 終生 token
+- ✅ 靈力 RPG **Buff 事件** + 反刷雙閘（週期 + 活動）
+- ✅ 靈力**商店**（稱號異名 / icon 變體 / bar 配色 / 特效）+ 自動**霊格**階級
+- ✅ 事件開關、輕度防作弊（簽章 state）、一行安裝 / 更新
+
+### v2（預計實裝）
+- ⏳ **Quest 型挑戰事件**：「Y 分鐘內消耗 X token → 獎勵靈力 / 解鎖」，到期判定成功/失敗
+- ⏳ **轉蛋**：花靈力抽外觀，含重複保護
+- ⏳ **靈力當事件燃料**：花靈力主動重抽 / 保底一個 buff
+- ⏳ 更多 Buff 類型與稱號 / 季節限定外觀
+- ⏳ statusline line 1 微調項
+
+### 評估中（可能需要後端）
+- ❓ 跨人**排行榜** / 真正不可偽造的存檔（需帳號 + server，與目前「全 local、不上傳」取捨）
+
+歡迎開 issue 許願或送 PR（見 [CONTRIBUTING](./CONTRIBUTING.md)）。
 
 ## License
 
