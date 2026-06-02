@@ -5,6 +5,9 @@
 把你在 Claude Code 的**終生 token 消耗**變成經驗值，顯示等級 `Lv.`、日式中二稱號、XP 進度條，
 再加一層 **靈力 RPG buff 事件** 與 **外觀商店**。
 
+![cc-xp statusline](./docs/screenshot.png)
+
+<sub>（純文字版示意）</sub>
 ```
 [✻ Opus 4.8 (1M) - high] ⬩  my-project |  main
 [🌌️ 夜天ノ裁定者] Lv. 168 ⬩ 4.9B | ctx 7% | 5hr 0% | weekly 0%
