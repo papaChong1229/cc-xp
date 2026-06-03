@@ -3,8 +3,13 @@
 XP / Level statusline for Claude Code.
 
 把「終生累計消耗的 token 數」當經驗值，換算等級 Lv. + 日本中二風稱號，
-並畫一條 XP 進度條。資料層用 ccusage（daily --json 的 summary.totalTokens），
-配快取 + 背景非阻塞更新，避免每次 render 都全掃 transcript 造成卡頓。
+並畫一條 XP 進度條。資料層用 ccusage（daily --json），配快取 + 背景非阻塞更新，
+避免每次 render 都全掃 transcript 造成卡頓。
+
+終生量持久化：ccusage 本身無 cache/DB，每次重掃 transcript；Claude Code 的
+cleanupPeriodDays（預設 30 天）刪掉舊 .jsonl 後，ccusage 總量會縮水。cc-xp 自存
+per-date ledger（xp-ledger.json），每天值取 max 凍結，終生量 = 各日總和，故
+等級/稱號只增不退。已被刪的歷史不可回復——ledger 只保證「從首次記錄起」往後不退。
 
 輸出：cc-xp 只追加兩行，不再自畫 model/folder/git 那行。
   line A: [稱號] Lv.N ⬩ <終生總量>
@@ -65,6 +70,9 @@ TITLES = [
 CLAUDE_ONLY = True
 
 CACHE_PATH = os.path.join(HOME, ".claude", "statusline", "xp-cache.json")
+# 終生 ledger：per-date token 帳本，抗 transcript 清除（ccusage 無自身持久化，
+# 舊 .jsonl 被 cleanupPeriodDays 刪掉就縮水；ledger 每天取 max → 終生量只增不退）。
+LEDGER_PATH = os.path.join(HOME, ".claude", "statusline", "xp-ledger.json")
 CACHE_TTL_SEC = 60          # 快取多久算過期 → 觸發背景刷新
 FIRST_RUN_TIMEOUT = 25      # 首次無快取時，同步等 ccusage 的上限秒數
 REFRESH_TIMEOUT = 120       # 背景刷新跑 ccusage 的上限秒數
@@ -289,17 +297,67 @@ def _extract_total_tokens(data):
     return None
 
 
+def _row_date(r):
+    """ccusage daily 列的日期鍵：實際是 "period"，舊版可能是 "date"。"""
+    return r.get("period") or r.get("date")
+
+
+def _extract_daily_tokens(data):
+    """從 ccusage daily --json 取 {date: tokens} 逐日明細，供終生 ledger 累積。
+
+    CLAUDE_ONLY 邏輯與 _extract_total_tokens 對齊：有 per-model breakdown 時只計
+    claude* 模型；整份都無 breakdown（舊版 ccusage）才退回 per-date totalTokens。
+    sum(回傳值) 應等於 _extract_total_tokens(data)。
+
+    日期欄位：實際 ccusage daily 用 "period"（如 "2026-05-15"）；保留 "date" 當
+    back-compat fallback。同日多列（agent 拆列）以 max 合併（見 _row_date / merge）。
+    """
+    rows = data.get("daily") or data.get("data")
+    if not isinstance(rows, list):
+        return {}
+    if CLAUDE_ONLY:
+        out, any_breakdown = {}, False
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            date = _row_date(r)
+            if not date:
+                continue
+            s, found = 0, False
+            for mb in r.get("modelBreakdowns", []):
+                name = str(mb.get("modelName", "")).lower()
+                if name.startswith("claude"):
+                    found = any_breakdown = True
+                    s += (mb.get("inputTokens", 0) + mb.get("outputTokens", 0)
+                          + mb.get("cacheCreationTokens", 0)
+                          + mb.get("cacheReadTokens", 0))
+            if found:
+                out[date] = max(out.get(date, 0), int(s))
+        if any_breakdown:
+            return out
+        # 沒 breakdown（舊版 ccusage）→ 退回 per-date totalTokens
+    out = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        date = _row_date(r)
+        t = r.get("totalTokens")
+        if date and isinstance(t, (int, float)):
+            out[date] = max(out.get(date, 0), int(t))
+    return out
+
+
 # flag 組合（依偏好遞減）。--offline：免連網較快；--breakdown：取 per-model 拆分供
 # CLAUDE_ONLY 過濾。後面兩組是給不認得 --breakdown 的舊版 ccusage 的安全網，最後 plain
 # 一定能拿到頂層 totals.totalTokens。
 _FLAG_COMBOS = (["--offline", "--breakdown"], ["--breakdown"], ["--offline"], [])
 
 
-def fetch_lifetime_tokens(timeout: int):
-    """跑 ccusage daily --json，回傳終生 totalTokens（int）或 None。
+def _fetch_ccusage_data(timeout: int):
+    """跑 ccusage daily --json，回傳第一個成功解析且含可用 totals 的 data dict；否則 None。
 
-    對「每個可用 runner × 每組 flag」逐一嘗試，第一個成功就回。timeout 當作整體
-    牆鐘預算（非每次嘗試），避免最壞情況下 runner×flag 連乘把 statusline 卡死。
+    對「每個可用 runner × 每組 flag」逐一嘗試。timeout 當作整體牆鐘預算（非每次嘗試），
+    避免最壞情況下 runner×flag 連乘把 statusline 卡死。
     """
     runners = ccusage_runners()
     if not runners:
@@ -320,12 +378,34 @@ def fetch_lifetime_tokens(timeout: int):
                 if out.returncode != 0 or not out.stdout.strip():
                     continue
                 data = json.loads(out.stdout)
-                total = _extract_total_tokens(data)
-                if total is not None:
-                    return total
+                if _extract_total_tokens(data) is not None:
+                    return data
             except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
                 continue
     return None
+
+
+def fetch_lifetime_tokens(timeout: int):
+    """跑 ccusage、更新終生 ledger，回傳『不受 transcript 清除影響』的終生總量或 None。
+
+    ccusage 是 stateless、每次重掃 transcript（無自身持久化），舊 .jsonl 被
+    cleanupPeriodDays 刪掉後其總量會縮水。cc-xp 自存 per-date ledger，每天取 max
+    （半刪的天不把已記錄大值蓋小），終生量 = ledger 各日總和，故 go-forward 不回退。
+    取 max(ledger 總和, ccusage 當下 flat 總量) 當安全網；ledger 全空才退回 flat。
+    """
+    data = _fetch_ccusage_data(timeout)
+    if data is None:
+        return None
+    led = load_ledger()
+    daily = _extract_daily_tokens(data)
+    if daily:
+        merge_daily_into_ledger(led, daily)
+        save_ledger(led)
+    durable = ledger_total(led)
+    flat = _extract_total_tokens(data)
+    if durable > 0:
+        return max(durable, flat or 0)
+    return flat
 
 
 def read_cache():
@@ -345,6 +425,50 @@ def write_cache(tokens: int):
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump({"tokens": int(tokens), "ts": time.time()}, fh)
     os.replace(tmp, CACHE_PATH)
+
+
+# ─────────────────────── 終生 ledger（per-date 持久化）───────────────────────
+# 解決 ccusage 無自身持久化 + Claude Code cleanupPeriodDays 刪舊 transcript →
+# 終生量縮水、等級倒退。ledger 把每天值凍結（取 max），sum 即抗刪除的終生量。
+# 已被刪的歷史不可回復；ledger 只保證「從首次記錄起」往後不退。
+
+
+def new_ledger() -> dict:
+    return {"version": 1, "days": {}}
+
+
+def load_ledger() -> dict:
+    try:
+        with open(LEDGER_PATH, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        if isinstance(d, dict) and isinstance(d.get("days"), dict):
+            d.setdefault("version", 1)
+            return d
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return new_ledger()
+
+
+def save_ledger(led: dict):
+    os.makedirs(os.path.dirname(LEDGER_PATH), exist_ok=True)
+    tmp = LEDGER_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(led, fh, ensure_ascii=False)
+    os.replace(tmp, LEDGER_PATH)
+
+
+def ledger_total(led: dict) -> int:
+    days = led.get("days", {})
+    return int(sum(v for v in days.values() if isinstance(v, (int, float))))
+
+
+def merge_daily_into_ledger(led: dict, daily: dict) -> dict:
+    """把 ccusage 逐日明細 upsert 進 ledger：同日取 max（凍結最大值、抗半刪）。"""
+    days = led.setdefault("days", {})
+    for date, toks in daily.items():
+        if isinstance(toks, (int, float)) and toks > days.get(date, 0):
+            days[date] = int(toks)
+    return led
 
 
 def spawn_background_refresh():

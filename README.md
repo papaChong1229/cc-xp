@@ -16,6 +16,7 @@
 ## 核心功能
 
 - **XP = 你的真實 claude-only 終生 token 數**（透過 [`ccusage`](https://github.com/ryoppippi/ccusage) 重算）。
+- **終生量持久化、只增不退**：ccusage 無自身 cache，每次重掃 transcript；Claude Code 的 `cleanupPeriodDays`（預設 30 天）刪掉舊 `.jsonl` 後 ccusage 會縮水。cc-xp 自存 per-date ledger（`~/.claude/statusline/xp-ledger.json`），每天值取 max 凍結，等級/稱號不會因清檔倒退。已被刪的歷史不可回復，ledger 只保證「從首次記錄起」往後不退。
 - RPG 事件只動一條**獨立貨幣「靈力」**，不會動到 token 的 XP 顯示。
 
 ## 需求

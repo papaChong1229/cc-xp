@@ -16,6 +16,7 @@ Japanese title, and an XP bar — plus a layer of **靈力 (rei) RPG buff events
 ## Core features
 
 - **XP = your real claude-only lifetime token count** (recomputed via [`ccusage`](https://github.com/ryoppippi/ccusage)).
+- **Lifetime total is persisted and monotonic**: ccusage keeps no cache of its own and re-scans transcripts every run, so once Claude Code's `cleanupPeriodDays` (default 30) deletes old `.jsonl` files, ccusage's total shrinks. cc-xp keeps its own per-date ledger (`~/.claude/statusline/xp-ledger.json`), freezing each day's value via `max`, so your level/title never regresses when transcripts are cleaned up. Already-deleted history is unrecoverable — the ledger only guarantees no regression *from the first time it recorded a day onward*.
 - RPG events only move a **separate currency, 靈力 (rei)** — they never touch the token-based XP display.
 
 ## Requirements
