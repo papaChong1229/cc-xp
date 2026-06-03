@@ -13,13 +13,6 @@
 
 ![cc-xp statusline](./docs/screenshot.png)
 
-<sub>（純文字版示意）</sub>
-```
-[✻ Opus 4.8 (1M) - high] ⬩  my-project |  main
-[🌌️ 夜天ノ裁定者] Lv. 168 ⬩ 4.9B | ctx 7% | 5hr 0% | weekly 0%
-[████████░░░░░░░░░░░] 41.25% (180,394,788 / 437,325,491) ⬩ 靈 1,234 霊格:参  🌀 霊脈活性 1.2x 22m
-```
-
 ## 核心功能
 
 - **XP = 你的真實 claude-only 終生 token 數**（透過 [`ccusage`](https://github.com/ryoppippi/ccusage) 重算）。
@@ -31,7 +24,11 @@
 - [`ccusage`](https://github.com/ryoppippi/ccusage)（可 `bunx ccusage` 免安裝，或 `npm i -g ccusage`）
 - **Nerd Font** + 支援 emoji 的終端（icon 用）
 
-## 安裝（一行搞定）
+## 安裝
+
+> **建議使用下面的腳本安裝**
+它會記下你原本的 `statusline`、將新增的 cc-xp statusline 擴增在下方。
+若是使用 Claude Code Plugin 進行安裝的話，也需要跑一次安裝腳本才能做到相同的顯示方式。
 
 **macOS / Linux**
 ```bash
@@ -43,7 +40,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/papaChong1229/cc-xp/main/ins
 irm https://raw.githubusercontent.com/papaChong1229/cc-xp/main/install.ps1 | iex
 ```
 
-兩者都會自動完成三步：
+兩者都會自動完成以下三個動作：
 
 1. **下載腳本** 到 `~/.claude/cc-xp/`
 2. **寫入設定** — 在 `~/.claude/settings.json` 設好 `statusLine` 與 `UserPromptSubmit` hook
@@ -51,7 +48,7 @@ irm https://raw.githubusercontent.com/papaChong1229/cc-xp/main/install.ps1 | iex
 3. **設好 `cc-xp` 指令** — mac/Linux 加 shell 別名；Windows 建 `cc-xp.cmd` + PowerShell `$PROFILE` 函式
 
 裝完：**重開終端** + **重啟 Claude Code**。
-**更新**：重跑同一行即可（抓最新版、冪等）。
+**更新**：重跑同一行即可（抓最新版等）。
 
 <details>
 <summary>替代：用 Claude Code Plugin 安裝</summary>
@@ -84,7 +81,7 @@ cc-xp events off          # 關閉整套 RPG 事件（statusline 退回純資訊
 
 - **靈力**：每送一則訊息（`UserPromptSubmit` hook）按 token 增量累積；buff 生效時加速。
 - **反刷**：新事件擲骰需「距上次 ≥ 90 分」**且**「≥ 8 則訊息」，時間戳存全域 state ── 避免有人想要刷訊息 or 新對話來刷靈力。
-- **Buff 事件**（v1）：無事件 / 霊脈活性 1.2x / 凪 1.1x / 冥月 1.5x / 狂乱 2.0x。
+- **Buff 事件**：無事件 / 霊脈活性 1.2x / 凪 1.1x / 冥月 1.5x / 狂乱 2.0x。
 - **商店 + 霊格**：靈力主要消費於外觀類的內容（稱號異名 / icon 變體 / bar 配色 / 特效），並且會根據總獲得量自動晉升「霊格」階級。
 - **資料**：state 存在 `~/.claude/statusline/.cc-xp.dat`（base64 + HMAC 簽章；手改會被重置）。全部 local，不上傳。
 
@@ -98,7 +95,6 @@ cc-xp events off          # 關閉整套 RPG 事件（statusline 退回純資訊
 - **`REI_RATE`** — 靈力累積速率（每 token 換多少靈力）。
 - **`BAR_THEMES`** — XP 進度條的配色主題。
 - **`C_*`** — statusline 各部位的顏色（ANSI / 256 色）。
-- **`LINE_SPACING`** — 三行之間插入幾個空白行（`0` = 緊湊）。
 - **`F` / `A` / `R`** — 升級曲線參數，決定每級所需 XP。
 
 ## Roadmap
@@ -108,13 +104,13 @@ cc-xp events off          # 關閉整套 RPG 事件（statusline 退回純資訊
 - ✅ 靈力 RPG **Buff 事件** + 反刷雙閘（週期 + 活動）
 - ✅ 靈力**商店**（稱號異名 / icon 變體 / bar 配色 / 特效）+ 自動**霊格**階級
 - ✅ 事件開關、輕度防作弊（簽章 state）、一行安裝 / 更新
+- ✅ **非破壞性包裝**：不覆蓋你原本的 statusLine，append 兩行（稱號 + XP），buff 生效時再多一行；XP 括號數字自動換 K/M/B 單位
 
 ### 未來 Roadmap
 - ⏳ **Quest 型挑戰事件**：「Y 分鐘內消耗 X token → 獎勵靈力 / 解鎖」，到期判定成功/失敗
 - ⏳ **轉蛋**：花靈力抽外觀，含重複保護
 - ⏳ **靈力當事件燃料**：花靈力主動重抽 / 保底一個 buff
 - ⏳ 更多 Buff 類型與稱號 / 季節限定外觀
-- ⏳ statusline line 1 微調項
 
 歡迎開 issue 許願或送 PR（見 [CONTRIBUTING](./CONTRIBUTING.md)）。
 
