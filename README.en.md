@@ -21,7 +21,13 @@ Japanese title, and an XP bar — plus a layer of **靈力 (rei) RPG buff events
 ## Requirements
 
 - `python3`
-- [`ccusage`](https://github.com/ryoppippi/ccusage) (use `bunx ccusage` with no install, or `npm i -g ccusage`)
+- [`ccusage`](https://github.com/ryoppippi/ccusage): any of three setups work — cc-xp auto-detects and falls back through them in order:
+  - `bun` (recommended, `bun x ccusage`, no install)
+  - global install `npm i -g ccusage`
+  - or just `npx` on PATH (cc-xp runs `npx --yes ccusage`)
+
+  > If none is found the statusline still renders but the level stays at Lv.1; a new session will prompt you to install.
+  > To check which runner is used / whether numbers come back: `cc-xp doctor`.
 - A **Nerd Font** + an emoji-capable terminal (for icons)
 
 ## Install

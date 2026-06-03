@@ -202,16 +202,57 @@ def reikaku_name(rei_earned_total: float) -> str:
 # ───────────────────────────────── ccusage ─────────────────────────────────
 
 
-def ccusage_cmd():
-    """挑一個能跑 ccusage 的方式：全域 > bun x > npx。回傳 list 前綴或 None。"""
+# statusline 常跑在精簡 / 非互動環境（GUI 啟動、login-shell-only），nvm / bun 的 bin
+# 多半沒被 shell rc 載進 PATH。下面這些是各家全域安裝的常見落點，補進來再給 which 找，
+# 並且同一份 PATH 也餵給 subprocess——全域 ccusage 是 `#!/usr/bin/env node` shebang，
+# 要 node 在 PATH 上才跑得起來（bun x 自帶 runtime 不受影響，這就是「bunx 行、npm 全域不行」的根因）。
+_EXTRA_PATH_DIRS = (
+    os.path.join(HOME, ".bun", "bin"),
+    os.path.join(HOME, ".local", "bin"),
+    os.path.join(HOME, ".npm-global", "bin"),
+    os.path.join(HOME, "node_modules", ".bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+)
+
+
+def _augmented_path():
+    """現有 PATH 疊上常見全域安裝位置（含 nvm 各版 bin），回傳去重後的 PATH 字串。"""
+    parts = (os.environ.get("PATH", "") or "").split(os.pathsep)
+    extra = list(_EXTRA_PATH_DIRS)
+    nvm_root = os.path.join(HOME, ".nvm", "versions", "node")
+    try:
+        for ver in sorted(os.listdir(nvm_root)):
+            extra.append(os.path.join(nvm_root, ver, "bin"))
+    except OSError:
+        pass
+    seen, out = set(), []
+    for p in parts + extra:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return os.pathsep.join(out)
+
+
+def ccusage_runners():
+    """回傳所有可用的 ccusage 執行前綴，依偏好排序（全域 > bun x > npx）。
+
+    跟舊版 ccusage_cmd 的差別：不再只挑第一個。多個都在就全給，執行時逐一 fallback，
+    這樣偵測到的全域 ccusage 萬一跑不起來，仍會退到 bun x / npx。
+    """
     from shutil import which
-    if which("ccusage"):
-        return ["ccusage"]
-    if which("bun"):
-        return ["bun", "x", "ccusage"]
-    if which("npx"):
-        return ["npx", "--yes", "ccusage"]
-    return None
+    path = _augmented_path()
+    runners = []
+    cc = which("ccusage", path=path)
+    if cc:
+        runners.append([cc])
+    bun = which("bun", path=path)
+    if bun:
+        runners.append([bun, "x", "ccusage"])
+    npx = which("npx", path=path)
+    if npx:
+        runners.append([npx, "--yes", "ccusage"])
+    return runners
 
 
 def _extract_total_tokens(data):
@@ -248,26 +289,42 @@ def _extract_total_tokens(data):
     return None
 
 
+# flag 組合（依偏好遞減）。--offline：免連網較快；--breakdown：取 per-model 拆分供
+# CLAUDE_ONLY 過濾。後面兩組是給不認得 --breakdown 的舊版 ccusage 的安全網，最後 plain
+# 一定能拿到頂層 totals.totalTokens。
+_FLAG_COMBOS = (["--offline", "--breakdown"], ["--breakdown"], ["--offline"], [])
+
+
 def fetch_lifetime_tokens(timeout: int):
-    """跑 ccusage daily --json，回傳 summary.totalTokens（int）或 None。"""
-    pre = ccusage_cmd()
-    if pre is None:
+    """跑 ccusage daily --json，回傳終生 totalTokens（int）或 None。
+
+    對「每個可用 runner × 每組 flag」逐一嘗試，第一個成功就回。timeout 當作整體
+    牆鐘預算（非每次嘗試），避免最壞情況下 runner×flag 連乘把 statusline 卡死。
+    """
+    runners = ccusage_runners()
+    if not runners:
         return None
-    # --offline：免連網較快；--breakdown：取 per-model 拆分供 CLAUDE_ONLY 過濾。
-    for extra in (["--offline", "--breakdown"], ["--breakdown"]):
-        try:
-            out = subprocess.run(
-                pre + ["daily", "--json"] + extra,
-                capture_output=True, text=True, timeout=timeout,
-            )
-            if out.returncode != 0 or not out.stdout.strip():
+    env = dict(os.environ)
+    env["PATH"] = _augmented_path()
+    deadline = time.monotonic() + timeout
+    for pre in runners:
+        for extra in _FLAG_COMBOS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.5:
+                return None
+            try:
+                out = subprocess.run(
+                    pre + ["daily", "--json"] + extra,
+                    capture_output=True, text=True, timeout=remaining, env=env,
+                )
+                if out.returncode != 0 or not out.stdout.strip():
+                    continue
+                data = json.loads(out.stdout)
+                total = _extract_total_tokens(data)
+                if total is not None:
+                    return total
+            except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
                 continue
-            data = json.loads(out.stdout)
-            total = _extract_total_tokens(data)
-            if total is not None:
-                return total
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
-            continue
     return None
 
 
@@ -319,6 +376,48 @@ def get_lifetime_tokens():
         write_cache(toks)
         return toks
     return 0
+
+
+# 沒有任何 runner 時給使用者的安裝提示（doctor / SessionStart 共用）。
+CCUSAGE_INSTALL_HINT = (
+    "cc-xp：偵測不到 ccusage，等級會卡在 Lv.1。擇一安裝即可：\n"
+    "  • bun（推薦，免裝套件）： curl -fsSL https://bun.sh/install | bash\n"
+    "  • 或全域安裝：           npm i -g ccusage\n"
+    "  • 已裝 node 也可不裝：    確保 npx 在 PATH（cc-xp 會用 npx 跑）"
+)
+
+
+def _runner_label(pre):
+    """把 runner 前綴轉成人看得懂的名稱。"""
+    exe = os.path.basename(pre[0]).lower()
+    if exe.startswith("bun"):
+        return "bun x ccusage"
+    if exe.startswith("npx"):
+        return "npx ccusage"
+    return "全域 ccusage"
+
+
+def cmd_doctor():
+    """列出偵測到的 ccusage 執行方式 + 實際取得的 token，給使用者自查。"""
+    runners = ccusage_runners()
+    if not runners:
+        print(CCUSAGE_INSTALL_HINT)
+        return
+    print("cc-xp ccusage 診斷：")
+    for i, pre in enumerate(runners):
+        mark = "→ 優先" if i == 0 else "  備援"
+        print(f"  {mark}  {_runner_label(pre):<16} {' '.join(pre)}")
+    toks = fetch_lifetime_tokens(FIRST_RUN_TIMEOUT)
+    if toks is None:
+        print("  ⚠ 偵測到 runner 但實際取數失敗——可能是 node 不在 PATH 或版本太舊。")
+    else:
+        print(f"  ✓ 取得終生 tokens：{toks:,}（CLAUDE_ONLY={CLAUDE_ONLY}）")
+
+
+def cmd_ccusage_check():
+    """SessionStart hook 用：偵測不到任何 runner 才輸出安裝提示，否則靜默。"""
+    if not ccusage_runners():
+        print(CCUSAGE_INSTALL_HINT)
 
 
 # ───────────────────────────────── 顯示 ─────────────────────────────────
@@ -669,8 +768,10 @@ COMMANDS = [
     ("equip <id>",       "裝備已擁有的外觀"),
     ("unequip <slot>",   "卸下外觀（slot: title_variant/icon_variant/bar_theme/effect）"),
     ("events on|off",    "開 / 關整套 RPG 事件（關閉時 statusline 退回純資訊型）"),
+    ("doctor",           "診斷 ccusage：列出偵測到的執行方式與實際取得的 token"),
     ("help",             "顯示這個說明"),
     ("tick",             "（內部）事件引擎 tick，由 UserPromptSubmit hook 自動呼叫"),
+    ("ccusage-check",    "（內部）偵測不到 ccusage 才提示安裝，由 SessionStart hook 呼叫"),
     ("(無參數)",          "（內部）輸出 statusline，由 Claude Code 自動呼叫"),
 ]
 
@@ -834,6 +935,17 @@ def cmd_install(no_hook=False):
                                    "command": f'"{py}" "{stable}" tick', "timeout": 10}]})
             hook_added = True
 
+        # SessionStart：偵測不到 ccusage 時提示安裝（裝好就靜默）。
+        ss = hooks.setdefault("SessionStart", [])
+        ss_already = any(
+            "xp-statusline.py" in h.get("command", "") and "ccusage-check" in h.get("command", "")
+            for grp in ss if isinstance(grp, dict)
+            for h in grp.get("hooks", []) if isinstance(h, dict)
+        )
+        if not ss_already:
+            ss.append({"hooks": [{"type": "command",
+                                  "command": f'"{py}" "{stable}" ccusage-check', "timeout": 10}]})
+
     tmp = settings_path + ".tmp"
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -881,6 +993,12 @@ def main():
         return
     if arg == "list":
         cmd_list()
+        return
+    if arg in ("doctor", "ccusage"):
+        cmd_doctor()
+        return
+    if arg == "ccusage-check":
+        cmd_ccusage_check()
         return
     if arg == "events":
         cmd_events(sys.argv[2] if len(sys.argv) > 2 else None)

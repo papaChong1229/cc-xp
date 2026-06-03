@@ -21,7 +21,13 @@
 ## 需求
 
 - `python3`
-- [`ccusage`](https://github.com/ryoppippi/ccusage)（可 `bunx ccusage` 免安裝，或 `npm i -g ccusage`）
+- [`ccusage`](https://github.com/ryoppippi/ccusage)：三種裝法皆可，cc-xp 會自動偵測並逐一 fallback——
+  - `bun`（推薦，`bun x ccusage` 免裝套件）
+  - 全域安裝 `npm i -g ccusage`
+  - 或只要 `npx` 在 PATH（cc-xp 會用 `npx --yes ccusage`）
+
+  > 偵測不到時 statusline 仍會顯示，但等級卡在 Lv.1；開新 session 會提示安裝。
+  > 想自查用哪個 / 是否取得到數字：`cc-xp doctor`。
 - **Nerd Font** + 支援 emoji 的終端（icon 用）
 
 ## 安裝

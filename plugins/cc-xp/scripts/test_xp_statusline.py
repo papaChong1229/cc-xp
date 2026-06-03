@@ -8,8 +8,11 @@
 """
 
 import importlib.util
+import json
 import os
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SPEC = importlib.util.spec_from_file_location("xp_statusline",
@@ -121,6 +124,83 @@ class WrappedLine1Test(unittest.TestCase):
         # 結尾換行去掉，避免 join 後多出空行；但內部換行保留。
         cfg = {"wrapped_statusline": {"command": "printf 'A\\nB\\n\\n'"}}
         self.assertEqual(xp.wrapped_line1("{}", cfg), "A\nB")
+
+
+def _proc(returncode=0, stdout=""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+
+# ccusage daily --json 的最小可解析輸出（頂層 totals）。
+_OK_JSON = json.dumps({"totals": {"totalTokens": 1234}})
+
+
+class CcusageRunnersTest(unittest.TestCase):
+    def test_orders_global_bun_npx(self):
+        # 三種都在 → 依偏好排序：全域 > bun x > npx。
+        def fake_which(name, path=None):
+            return {"ccusage": "/g/ccusage", "bun": "/b/bun", "npx": "/n/npx"}.get(name)
+        with mock.patch("shutil.which", side_effect=fake_which):
+            runners = xp.ccusage_runners()
+        self.assertEqual(runners,
+                         [["/g/ccusage"], ["/b/bun", "x", "ccusage"], ["/n/npx", "--yes", "ccusage"]])
+
+    def test_none_when_nothing_found(self):
+        with mock.patch("shutil.which", return_value=None):
+            self.assertEqual(xp.ccusage_runners(), [])
+
+    def test_only_bun(self):
+        def fake_which(name, path=None):
+            return "/b/bun" if name == "bun" else None
+        with mock.patch("shutil.which", side_effect=fake_which):
+            self.assertEqual(xp.ccusage_runners(), [["/b/bun", "x", "ccusage"]])
+
+
+class FetchFallbackTest(unittest.TestCase):
+    def test_falls_through_to_second_runner_when_first_fails(self):
+        # 核心回歸：全域 ccusage 被偵測到但執行失敗（rc!=0），仍退到 bun x 取到值。
+        with mock.patch.object(xp, "ccusage_runners",
+                               return_value=[["/g/ccusage"], ["/b/bun", "x", "ccusage"]]):
+            def fake_run(cmd, **kw):
+                return _proc(1, "") if cmd[0] == "/g/ccusage" else _proc(0, _OK_JSON)
+            with mock.patch("subprocess.run", side_effect=fake_run):
+                self.assertEqual(xp.fetch_lifetime_tokens(30), 1234)
+
+    def test_flag_fallback_when_breakdown_rejected(self):
+        # 舊版 ccusage：帶 --breakdown 失敗，plain daily --json 成功。
+        with mock.patch.object(xp, "ccusage_runners", return_value=[["/g/ccusage"]]):
+            def fake_run(cmd, **kw):
+                return _proc(0, _OK_JSON) if "--breakdown" not in cmd else _proc(1, "")
+            with mock.patch("subprocess.run", side_effect=fake_run):
+                self.assertEqual(xp.fetch_lifetime_tokens(30), 1234)
+
+    def test_none_when_no_runner(self):
+        with mock.patch.object(xp, "ccusage_runners", return_value=[]):
+            self.assertIsNone(xp.fetch_lifetime_tokens(30))
+
+    def test_returns_none_when_all_fail(self):
+        with mock.patch.object(xp, "ccusage_runners", return_value=[["/g/ccusage"]]):
+            with mock.patch("subprocess.run", return_value=_proc(1, "")):
+                self.assertIsNone(xp.fetch_lifetime_tokens(30))
+
+
+class CcusageCheckTest(unittest.TestCase):
+    def test_check_silent_when_runner_present(self):
+        import io
+        from contextlib import redirect_stdout
+        with mock.patch.object(xp, "ccusage_runners", return_value=[["/g/ccusage"]]):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                xp.cmd_ccusage_check()
+            self.assertEqual(buf.getvalue().strip(), "")
+
+    def test_check_hints_when_no_runner(self):
+        import io
+        from contextlib import redirect_stdout
+        with mock.patch.object(xp, "ccusage_runners", return_value=[]):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                xp.cmd_ccusage_check()
+            self.assertIn("ccusage", buf.getvalue())
 
 
 if __name__ == "__main__":
