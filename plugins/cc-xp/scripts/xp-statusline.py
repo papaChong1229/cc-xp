@@ -3,8 +3,13 @@
 XP / Level statusline for Claude Code.
 
 把「終生累計消耗的 token 數」當經驗值，換算等級 Lv. + 日本中二風稱號，
-並畫一條 XP 進度條。資料層用 ccusage（daily --json 的 summary.totalTokens），
-配快取 + 背景非阻塞更新，避免每次 render 都全掃 transcript 造成卡頓。
+並畫一條 XP 進度條。資料層用 ccusage（daily --json），配快取 + 背景非阻塞更新，
+避免每次 render 都全掃 transcript 造成卡頓。
+
+終生量持久化：ccusage 本身無 cache/DB，每次重掃 transcript；Claude Code 的
+cleanupPeriodDays（預設 30 天）刪掉舊 .jsonl 後，ccusage 總量會縮水。cc-xp 自存
+per-date ledger（xp-ledger.json），每天值取 max 凍結，終生量 = 各日總和，故
+等級/稱號只增不退。已被刪的歷史不可回復——ledger 只保證「從首次記錄起」往後不退。
 
 輸出：cc-xp 只追加兩行，不再自畫 model/folder/git 那行。
   line A: [稱號] Lv.N ⬩ <終生總量>
@@ -65,6 +70,9 @@ TITLES = [
 CLAUDE_ONLY = True
 
 CACHE_PATH = os.path.join(HOME, ".claude", "statusline", "xp-cache.json")
+# 終生 ledger：per-date token 帳本，抗 transcript 清除（ccusage 無自身持久化，
+# 舊 .jsonl 被 cleanupPeriodDays 刪掉就縮水；ledger 每天取 max → 終生量只增不退）。
+LEDGER_PATH = os.path.join(HOME, ".claude", "statusline", "xp-ledger.json")
 CACHE_TTL_SEC = 60          # 快取多久算過期 → 觸發背景刷新
 FIRST_RUN_TIMEOUT = 25      # 首次無快取時，同步等 ccusage 的上限秒數
 REFRESH_TIMEOUT = 120       # 背景刷新跑 ccusage 的上限秒數
@@ -202,16 +210,57 @@ def reikaku_name(rei_earned_total: float) -> str:
 # ───────────────────────────────── ccusage ─────────────────────────────────
 
 
-def ccusage_cmd():
-    """挑一個能跑 ccusage 的方式：全域 > bun x > npx。回傳 list 前綴或 None。"""
+# statusline 常跑在精簡 / 非互動環境（GUI 啟動、login-shell-only），nvm / bun 的 bin
+# 多半沒被 shell rc 載進 PATH。下面這些是各家全域安裝的常見落點，補進來再給 which 找，
+# 並且同一份 PATH 也餵給 subprocess——全域 ccusage 是 `#!/usr/bin/env node` shebang，
+# 要 node 在 PATH 上才跑得起來（bun x 自帶 runtime 不受影響，這就是「bunx 行、npm 全域不行」的根因）。
+_EXTRA_PATH_DIRS = (
+    os.path.join(HOME, ".bun", "bin"),
+    os.path.join(HOME, ".local", "bin"),
+    os.path.join(HOME, ".npm-global", "bin"),
+    os.path.join(HOME, "node_modules", ".bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+)
+
+
+def _augmented_path():
+    """現有 PATH 疊上常見全域安裝位置（含 nvm 各版 bin），回傳去重後的 PATH 字串。"""
+    parts = (os.environ.get("PATH", "") or "").split(os.pathsep)
+    extra = list(_EXTRA_PATH_DIRS)
+    nvm_root = os.path.join(HOME, ".nvm", "versions", "node")
+    try:
+        for ver in sorted(os.listdir(nvm_root)):
+            extra.append(os.path.join(nvm_root, ver, "bin"))
+    except OSError:
+        pass
+    seen, out = set(), []
+    for p in parts + extra:
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return os.pathsep.join(out)
+
+
+def ccusage_runners():
+    """回傳所有可用的 ccusage 執行前綴，依偏好排序（全域 > bun x > npx）。
+
+    跟舊版 ccusage_cmd 的差別：不再只挑第一個。多個都在就全給，執行時逐一 fallback，
+    這樣偵測到的全域 ccusage 萬一跑不起來，仍會退到 bun x / npx。
+    """
     from shutil import which
-    if which("ccusage"):
-        return ["ccusage"]
-    if which("bun"):
-        return ["bun", "x", "ccusage"]
-    if which("npx"):
-        return ["npx", "--yes", "ccusage"]
-    return None
+    path = _augmented_path()
+    runners = []
+    cc = which("ccusage", path=path)
+    if cc:
+        runners.append([cc])
+    bun = which("bun", path=path)
+    if bun:
+        runners.append([bun, "x", "ccusage"])
+    npx = which("npx", path=path)
+    if npx:
+        runners.append([npx, "--yes", "ccusage"])
+    return runners
 
 
 def _extract_total_tokens(data):
@@ -248,27 +297,115 @@ def _extract_total_tokens(data):
     return None
 
 
-def fetch_lifetime_tokens(timeout: int):
-    """跑 ccusage daily --json，回傳 summary.totalTokens（int）或 None。"""
-    pre = ccusage_cmd()
-    if pre is None:
-        return None
-    # --offline：免連網較快；--breakdown：取 per-model 拆分供 CLAUDE_ONLY 過濾。
-    for extra in (["--offline", "--breakdown"], ["--breakdown"]):
-        try:
-            out = subprocess.run(
-                pre + ["daily", "--json"] + extra,
-                capture_output=True, text=True, timeout=timeout,
-            )
-            if out.returncode != 0 or not out.stdout.strip():
+def _row_date(r):
+    """ccusage daily 列的日期鍵：實際是 "period"，舊版可能是 "date"。"""
+    return r.get("period") or r.get("date")
+
+
+def _extract_daily_tokens(data):
+    """從 ccusage daily --json 取 {date: tokens} 逐日明細，供終生 ledger 累積。
+
+    CLAUDE_ONLY 邏輯與 _extract_total_tokens 對齊：有 per-model breakdown 時只計
+    claude* 模型；整份都無 breakdown（舊版 ccusage）才退回 per-date totalTokens。
+    sum(回傳值) 應等於 _extract_total_tokens(data)。
+
+    日期欄位：實際 ccusage daily 用 "period"（如 "2026-05-15"）；保留 "date" 當
+    back-compat fallback。同日多列（agent 拆列）以 max 合併（見 _row_date / merge）。
+    """
+    rows = data.get("daily") or data.get("data")
+    if not isinstance(rows, list):
+        return {}
+    if CLAUDE_ONLY:
+        out, any_breakdown = {}, False
+        for r in rows:
+            if not isinstance(r, dict):
                 continue
-            data = json.loads(out.stdout)
-            total = _extract_total_tokens(data)
-            if total is not None:
-                return total
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
+            date = _row_date(r)
+            if not date:
+                continue
+            s, found = 0, False
+            for mb in r.get("modelBreakdowns", []):
+                name = str(mb.get("modelName", "")).lower()
+                if name.startswith("claude"):
+                    found = any_breakdown = True
+                    s += (mb.get("inputTokens", 0) + mb.get("outputTokens", 0)
+                          + mb.get("cacheCreationTokens", 0)
+                          + mb.get("cacheReadTokens", 0))
+            if found:
+                out[date] = max(out.get(date, 0), int(s))
+        if any_breakdown:
+            return out
+        # 沒 breakdown（舊版 ccusage）→ 退回 per-date totalTokens
+    out = {}
+    for r in rows:
+        if not isinstance(r, dict):
             continue
+        date = _row_date(r)
+        t = r.get("totalTokens")
+        if date and isinstance(t, (int, float)):
+            out[date] = max(out.get(date, 0), int(t))
+    return out
+
+
+# flag 組合（依偏好遞減）。--offline：免連網較快；--breakdown：取 per-model 拆分供
+# CLAUDE_ONLY 過濾。後面兩組是給不認得 --breakdown 的舊版 ccusage 的安全網，最後 plain
+# 一定能拿到頂層 totals.totalTokens。
+_FLAG_COMBOS = (["--offline", "--breakdown"], ["--breakdown"], ["--offline"], [])
+
+
+def _fetch_ccusage_data(timeout: int):
+    """跑 ccusage daily --json，回傳第一個成功解析且含可用 totals 的 data dict；否則 None。
+
+    對「每個可用 runner × 每組 flag」逐一嘗試。timeout 當作整體牆鐘預算（非每次嘗試），
+    避免最壞情況下 runner×flag 連乘把 statusline 卡死。
+    """
+    runners = ccusage_runners()
+    if not runners:
+        return None
+    env = dict(os.environ)
+    env["PATH"] = _augmented_path()
+    deadline = time.monotonic() + timeout
+    for pre in runners:
+        for extra in _FLAG_COMBOS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.5:
+                return None
+            try:
+                out = subprocess.run(
+                    pre + ["daily", "--json"] + extra,
+                    capture_output=True, text=True, timeout=remaining, env=env,
+                )
+                if out.returncode != 0 or not out.stdout.strip():
+                    continue
+                data = json.loads(out.stdout)
+                if _extract_total_tokens(data) is not None:
+                    return data
+            except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError, OSError):
+                continue
     return None
+
+
+def fetch_lifetime_tokens(timeout: int):
+    """跑 ccusage、更新終生 ledger，回傳『不受 transcript 清除影響』的終生總量或 None。
+
+    ccusage 是 stateless、每次重掃 transcript（無自身持久化），舊 .jsonl 被
+    cleanupPeriodDays 刪掉後其總量會縮水。cc-xp 自存 per-date ledger，每天取 max
+    （半刪的天不把已記錄大值蓋小），終生量 = ledger 各日總和，故 go-forward 不回退。
+    取 max(ledger 總和, ccusage 當下 flat 總量) 當安全網；ledger 全空才退回 flat。
+    """
+    data = _fetch_ccusage_data(timeout)
+    if data is None:
+        return None
+    led = load_ledger()
+    daily = _extract_daily_tokens(data)
+    if daily:
+        merge_daily_into_ledger(led, daily)
+        save_ledger(led)
+    durable = ledger_total(led)
+    flat = _extract_total_tokens(data)
+    if durable > 0:
+        return max(durable, flat or 0)
+    return flat
 
 
 def read_cache():
@@ -288,6 +425,50 @@ def write_cache(tokens: int):
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump({"tokens": int(tokens), "ts": time.time()}, fh)
     os.replace(tmp, CACHE_PATH)
+
+
+# ─────────────────────── 終生 ledger（per-date 持久化）───────────────────────
+# 解決 ccusage 無自身持久化 + Claude Code cleanupPeriodDays 刪舊 transcript →
+# 終生量縮水、等級倒退。ledger 把每天值凍結（取 max），sum 即抗刪除的終生量。
+# 已被刪的歷史不可回復；ledger 只保證「從首次記錄起」往後不退。
+
+
+def new_ledger() -> dict:
+    return {"version": 1, "days": {}}
+
+
+def load_ledger() -> dict:
+    try:
+        with open(LEDGER_PATH, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        if isinstance(d, dict) and isinstance(d.get("days"), dict):
+            d.setdefault("version", 1)
+            return d
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return new_ledger()
+
+
+def save_ledger(led: dict):
+    os.makedirs(os.path.dirname(LEDGER_PATH), exist_ok=True)
+    tmp = LEDGER_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(led, fh, ensure_ascii=False)
+    os.replace(tmp, LEDGER_PATH)
+
+
+def ledger_total(led: dict) -> int:
+    days = led.get("days", {})
+    return int(sum(v for v in days.values() if isinstance(v, (int, float))))
+
+
+def merge_daily_into_ledger(led: dict, daily: dict) -> dict:
+    """把 ccusage 逐日明細 upsert 進 ledger：同日取 max（凍結最大值、抗半刪）。"""
+    days = led.setdefault("days", {})
+    for date, toks in daily.items():
+        if isinstance(toks, (int, float)) and toks > days.get(date, 0):
+            days[date] = int(toks)
+    return led
 
 
 def spawn_background_refresh():
@@ -319,6 +500,48 @@ def get_lifetime_tokens():
         write_cache(toks)
         return toks
     return 0
+
+
+# 沒有任何 runner 時給使用者的安裝提示（doctor / SessionStart 共用）。
+CCUSAGE_INSTALL_HINT = (
+    "cc-xp：偵測不到 ccusage，等級會卡在 Lv.1。擇一安裝即可：\n"
+    "  • bun（推薦，免裝套件）： curl -fsSL https://bun.sh/install | bash\n"
+    "  • 或全域安裝：           npm i -g ccusage\n"
+    "  • 已裝 node 也可不裝：    確保 npx 在 PATH（cc-xp 會用 npx 跑）"
+)
+
+
+def _runner_label(pre):
+    """把 runner 前綴轉成人看得懂的名稱。"""
+    exe = os.path.basename(pre[0]).lower()
+    if exe.startswith("bun"):
+        return "bun x ccusage"
+    if exe.startswith("npx"):
+        return "npx ccusage"
+    return "全域 ccusage"
+
+
+def cmd_doctor():
+    """列出偵測到的 ccusage 執行方式 + 實際取得的 token，給使用者自查。"""
+    runners = ccusage_runners()
+    if not runners:
+        print(CCUSAGE_INSTALL_HINT)
+        return
+    print("cc-xp ccusage 診斷：")
+    for i, pre in enumerate(runners):
+        mark = "→ 優先" if i == 0 else "  備援"
+        print(f"  {mark}  {_runner_label(pre):<16} {' '.join(pre)}")
+    toks = fetch_lifetime_tokens(FIRST_RUN_TIMEOUT)
+    if toks is None:
+        print("  ⚠ 偵測到 runner 但實際取數失敗——可能是 node 不在 PATH 或版本太舊。")
+    else:
+        print(f"  ✓ 取得終生 tokens：{toks:,}（CLAUDE_ONLY={CLAUDE_ONLY}）")
+
+
+def cmd_ccusage_check():
+    """SessionStart hook 用：偵測不到任何 runner 才輸出安裝提示，否則靜默。"""
+    if not ccusage_runners():
+        print(CCUSAGE_INSTALL_HINT)
 
 
 # ───────────────────────────────── 顯示 ─────────────────────────────────
@@ -669,8 +892,10 @@ COMMANDS = [
     ("equip <id>",       "裝備已擁有的外觀"),
     ("unequip <slot>",   "卸下外觀（slot: title_variant/icon_variant/bar_theme/effect）"),
     ("events on|off",    "開 / 關整套 RPG 事件（關閉時 statusline 退回純資訊型）"),
+    ("doctor",           "診斷 ccusage：列出偵測到的執行方式與實際取得的 token"),
     ("help",             "顯示這個說明"),
     ("tick",             "（內部）事件引擎 tick，由 UserPromptSubmit hook 自動呼叫"),
+    ("ccusage-check",    "（內部）偵測不到 ccusage 才提示安裝，由 SessionStart hook 呼叫"),
     ("(無參數)",          "（內部）輸出 statusline，由 Claude Code 自動呼叫"),
 ]
 
@@ -834,6 +1059,17 @@ def cmd_install(no_hook=False):
                                    "command": f'"{py}" "{stable}" tick', "timeout": 10}]})
             hook_added = True
 
+        # SessionStart：偵測不到 ccusage 時提示安裝（裝好就靜默）。
+        ss = hooks.setdefault("SessionStart", [])
+        ss_already = any(
+            "xp-statusline.py" in h.get("command", "") and "ccusage-check" in h.get("command", "")
+            for grp in ss if isinstance(grp, dict)
+            for h in grp.get("hooks", []) if isinstance(h, dict)
+        )
+        if not ss_already:
+            ss.append({"hooks": [{"type": "command",
+                                  "command": f'"{py}" "{stable}" ccusage-check', "timeout": 10}]})
+
     tmp = settings_path + ".tmp"
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -881,6 +1117,12 @@ def main():
         return
     if arg == "list":
         cmd_list()
+        return
+    if arg in ("doctor", "ccusage"):
+        cmd_doctor()
+        return
+    if arg == "ccusage-check":
+        cmd_ccusage_check()
         return
     if arg == "events":
         cmd_events(sys.argv[2] if len(sys.argv) > 2 else None)

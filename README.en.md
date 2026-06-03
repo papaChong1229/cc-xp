@@ -16,12 +16,19 @@ Japanese title, and an XP bar — plus a layer of **靈力 (rei) RPG buff events
 ## Core features
 
 - **XP = your real claude-only lifetime token count** (recomputed via [`ccusage`](https://github.com/ryoppippi/ccusage)).
+- **Lifetime total is persisted and monotonic**: ccusage keeps no cache of its own and re-scans transcripts every run, so once Claude Code's `cleanupPeriodDays` (default 30) deletes old `.jsonl` files, ccusage's total shrinks. cc-xp keeps its own per-date ledger (`~/.claude/statusline/xp-ledger.json`), freezing each day's value via `max`, so your level/title never regresses when transcripts are cleaned up. Already-deleted history is unrecoverable — the ledger only guarantees no regression *from the first time it recorded a day onward*.
 - RPG events only move a **separate currency, 靈力 (rei)** — they never touch the token-based XP display.
 
 ## Requirements
 
 - `python3`
-- [`ccusage`](https://github.com/ryoppippi/ccusage) (use `bunx ccusage` with no install, or `npm i -g ccusage`)
+- [`ccusage`](https://github.com/ryoppippi/ccusage): any of three setups work — cc-xp auto-detects and falls back through them in order:
+  - `bun` (recommended, `bun x ccusage`, no install)
+  - global install `npm i -g ccusage`
+  - or just `npx` on PATH (cc-xp runs `npx --yes ccusage`)
+
+  > If none is found the statusline still renders but the level stays at Lv.1; a new session will prompt you to install.
+  > To check which runner is used / whether numbers come back: `cc-xp doctor`.
 - A **Nerd Font** + an emoji-capable terminal (for icons)
 
 ## Install
