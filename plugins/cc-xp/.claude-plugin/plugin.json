@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "cc-xp",
   "displayName": "cc-xp — Claude Code XP statusline",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Gamified Claude Code statusline. XP = your honest claude-only lifetime token count (via ccusage); shows Lv./中二 title/XP bar. Adds 靈力 RPG buff events (a separate currency that never touches the honest token number) and a cosmetics shop.",
   "author": { "name": "papaChong" },
   "homepage": "https://github.com/papaChong1229/cc-xp",

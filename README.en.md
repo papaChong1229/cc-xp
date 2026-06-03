@@ -13,13 +13,6 @@ Japanese title, and an XP bar — plus a layer of **靈力 (rei) RPG buff events
 
 ![cc-xp statusline](./docs/screenshot.png)
 
-<sub>(plain-text approximation)</sub>
-```
-[✻ Opus 4.8 (1M) - high] ⬩  my-project |  main
-[🌌️ 夜天ノ裁定者] Lv. 168 ⬩ 4.9B | ctx 7% | 5hr 0% | weekly 0%
-[████████░░░░░░░░░░░] 41.25% (180,394,788 / 437,325,491) ⬩ 靈 1,234 霊格:参  🌀 霊脈活性 1.2x 22m
-```
-
 ## Core features
 
 - **XP = your real claude-only lifetime token count** (recomputed via [`ccusage`](https://github.com/ryoppippi/ccusage)).
@@ -31,7 +24,11 @@ Japanese title, and an XP bar — plus a layer of **靈力 (rei) RPG buff events
 - [`ccusage`](https://github.com/ryoppippi/ccusage) (use `bunx ccusage` with no install, or `npm i -g ccusage`)
 - A **Nerd Font** + an emoji-capable terminal (for icons)
 
-## Install (one line)
+## Install
+
+> **Use the install script below (recommended).**
+> It records your existing `statusLine` and appends the new cc-xp lines underneath.
+> If you install via the Claude Code plugin, you still need to run the install script once to get the same display.
 
 **macOS / Linux**
 ```bash
@@ -103,7 +100,6 @@ Open the constants block at the top of `~/.claude/cc-xp/xp-statusline.py` to twe
 - **`REI_RATE`** — how fast 靈力 accrues (rei earned per token).
 - **`BAR_THEMES`** — color themes for the XP bar.
 - **`C_*`** — colors for each part of the statusline (ANSI / 256-color).
-- **`LINE_SPACING`** — how many blank lines to insert between the three lines (`0` = compact).
 - **`F` / `A` / `R`** — the leveling-curve parameters that set the XP required per level.
 
 ## Roadmap
@@ -113,13 +109,13 @@ Open the constants block at the top of `~/.claude/cc-xp/xp-statusline.py` to twe
 - ✅ 靈力 RPG **buff events** + dual-gate anti-farming (cooldown + activity)
 - ✅ 靈力 **shop** (title variants / icon variants / bar themes / effects) + auto **霊格** ranks
 - ✅ Event toggle, light anti-tamper (signed state), one-line install / update
+- ✅ **Non-destructive wrap** (v0.1.1): keeps your existing statusLine, appends two lines (title + XP) plus a buff line when an event is active; XP numbers in parens auto-format to K/M/B
 
 ### Future roadmap
 - ⏳ **Quest events**: "consume X tokens within Y minutes → reward 靈力 / unlock", success/fail on expiry
 - ⏳ **Gacha**: spend 靈力 to roll cosmetics, with duplicate protection
 - ⏳ **靈力 as event fuel**: spend 靈力 to re-roll / guarantee a buff
 - ⏳ More buff types and titles / seasonal cosmetics
-- ⏳ Line 1 layout tweaks
 
 Open an issue to request features, or send a PR (see [CONTRIBUTING](./CONTRIBUTING.en.md)).
 

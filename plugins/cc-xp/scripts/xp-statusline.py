@@ -6,10 +6,11 @@ XP / Level statusline for Claude Code.
 並畫一條 XP 進度條。資料層用 ccusage（daily --json 的 summary.totalTokens），
 配快取 + 背景非阻塞更新，避免每次 render 都全掃 transcript 造成卡頓。
 
-輸出（多行）：
-  line 1: 原本的 ~/.claude/scripts/statusline.sh 輸出（非破壞性包裝）
-  line 2: Lv.N [稱號] ⬩ <終生總量>
-  line 3: [██████░░░] 42.56% (本級進度 / 本級跨度)
+輸出：cc-xp 只追加兩行，不再自畫 model/folder/git 那行。
+  line A: [稱號] Lv.N ⬩ <終生總量>
+  line B: [██████░░░] 42.56% (本級進度 / 本級跨度)   ← 括號數字自動換 K/M/B 單位
+非破壞性包裝：若使用者原本已設 statusLine，install 會記下它，render 時先執行
+那條原指令、把它的輸出接在最上面，cc-xp 兩行附在其下。沒有原指令就只輸出兩行。
 
 用法：
   正常：Claude Code 透過 stdin 餵 JSON 呼叫本檔。
@@ -69,25 +70,16 @@ FIRST_RUN_TIMEOUT = 25      # 首次無快取時，同步等 ccusage 的上限�
 REFRESH_TIMEOUT = 120       # 背景刷新跑 ccusage 的上限秒數
 
 BAR_WIDTH = 19              # XP 進度條寬度（字元）
-LINE_SPACING = 0            # 三行之間插入幾個空白行（0=緊湊，1=各空一行）
 
 # 圖示（Nerd Font glyph；想換直接改這裡）
-ICON_CLAUDE = "✻"          # 模型前的 Claude 標記
-ICON_FOLDER = ""      #  資料夾
-ICON_GIT    = ""      #  git branch
 ICON_TITLE  = ""      #  稱號
-NO_GIT_TEXT = "no git repo"
 
 # 顏色
 C_RESET  = "\033[0m"
-C_MODEL  = "\033[1;38;5;75m"            # 亮藍：模型名
-C_FOLDER = "\033[38;5;180m"            # 暖棕：資料夾
-C_GIT    = "\033[38;5;108m"            # 灰綠：branch
 C_DIM    = "\033[38;5;240m"            # 分隔線 / 暗
 C_LV     = "\033[1;38;5;255m"          # 等級：亮白（粗）
 C_TITLE  = "\033[1;38;5;213m"          # 稱號：亮紫粉
 C_TOTAL  = "\033[38;5;245m"            # 總量：灰
-C_META   = "\033[38;5;245m"            # ctx/5hr/weekly：灰
 C_BAR_F  = "\033[38;2;76;175;80m"      # XP 條已填：經典 XP 綠 (#4CAF50)
 C_BAR_E  = "\033[38;2;46;58;46m"       # XP 條未填：暗綠灰
 C_PCT    = "\033[1;38;2;102;200;106m"  # 百分比：亮綠（粗）
@@ -341,41 +333,28 @@ def humanize(n: float) -> str:
     return str(int(n))
 
 
-def _pct_str(val):
-    if isinstance(val, (int, float)):
-        return f"{round(val)}%"
-    return "?%"
+def wrapped_line1(raw_stdin: str, cfg: dict):
+    """執行使用者原本的 statusLine 指令，回傳其輸出當第一行；無 / 失敗回 None。
 
-
-def _git_branch(cwd):
-    if not cwd:
-        return ""
+    install 時把舊的 statusLine 物件記進 config 的 "wrapped_statusline"。這裡用
+    同一份 stdin JSON 餵給它，抓 stdout。防遞迴：指令本身若指向 cc-xp 就不跑。
+    """
+    w = cfg.get("wrapped_statusline")
+    if not isinstance(w, dict):
+        return None
+    cmd = w.get("command")
+    if not cmd or "xp-statusline.py" in cmd:   # 遞迴防護：別呼叫到自己
+        return None
     try:
         out = subprocess.run(
-            ["git", "-C", cwd, "branch", "--show-current"],
-            capture_output=True, text=True, timeout=3,
+            cmd, shell=True, input=raw_stdin,
+            capture_output=True, text=True, timeout=5,
         )
-        return out.stdout.strip() if out.returncode == 0 else ""
-    except (subprocess.TimeoutExpired, OSError):
-        return ""
-
-
-def build_line1(data: dict) -> str:
-    model = (data.get("model") or {}).get("display_name") or "?"
-    model = model.replace("1M context", "1M")  # (1M context) → (1M)
-    effort = (data.get("effort") or {}).get("level")
-    model_disp = f"{model} - {effort}" if effort else model
-    ws = data.get("workspace") or {}
-    cwd = ws.get("current_dir") or data.get("cwd") or ""
-    folder = os.path.basename(cwd.rstrip("/")) if cwd else "?"
-    branch = _git_branch(cwd)
-    git_part = (f"{C_GIT}{ICON_GIT} {branch}{C_RESET}" if branch
-                else f"{C_DIM}{ICON_GIT} {NO_GIT_TEXT}{C_RESET}")
-    return (
-        f"{C_DIM}[{C_RESET}{C_MODEL}{ICON_CLAUDE} {model_disp}{C_RESET}{C_DIM}]{C_RESET} "
-        f"{C_DIM}⬩{C_RESET} {C_FOLDER}{ICON_FOLDER} {folder}{C_RESET} "
-        f"{C_DIM}|{C_RESET} {git_part}"
-    )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.rstrip("\n")
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    return None
 
 
 def force_emoji(icon: str) -> str:
@@ -393,7 +372,7 @@ def _title_segment(title, ticon, effect):
     return f"{tcolor}{star}{lb}{ticon} {title}{rb}{C_RESET}"
 
 
-def render_xp_lines(xp: int, meta: dict, equipped: dict, events_on: bool, state: dict):
+def render_xp_lines(xp: int, equipped: dict, events_on: bool, state: dict):
     level, progress, span = level_for_xp(xp)
     title, ticon = title_for_level(
         level,
@@ -411,30 +390,30 @@ def render_xp_lines(xp: int, meta: dict, equipped: dict, events_on: bool, state:
 
     title_seg = _title_segment(title, ticon, equipped.get("effect"))
 
-    line2 = (
+    line_title = (
         f"{title_seg} "
         f"{C_LV}Lv. {level}{C_RESET} "
-        f"{C_TOTAL}⬩ {humanize(xp)}{C_RESET} "
-        f"{C_DIM}|{C_RESET} {C_META}ctx {meta['ctx']}{C_RESET} "
-        f"{C_DIM}|{C_RESET} {C_META}5hr {meta['five']}{C_RESET} "
-        f"{C_DIM}|{C_RESET} {C_META}weekly {meta['weekly']}{C_RESET}"
+        f"{C_TOTAL}⬩ {humanize(xp)}{C_RESET}"
     )
-    line3 = (
+    line_xp = (
         f"{C_DIM}[{C_RESET}{bar}{C_DIM}]{C_RESET} {c_pct}{pct:.2f}%{C_RESET} "
-        f"{C_NUM}({int(progress):,} / {int(span):,}){C_RESET}"
+        f"{C_NUM}({humanize(progress)} / {humanize(span)}){C_RESET}"
     )
+    lines = [line_title, line_xp]
     if events_on:
+        # 靈力 + 霊格（A2：霊格融進「靈」→ 靈〔参〕 49）接在 xp 行尾。
         rei = int(state.get("rei", 0))
-        line3 += f" {C_DIM}⬩{C_RESET} {C_REI}靈 {rei:,}{C_RESET}"
         rk = reikaku_name(state.get("rei_earned_total", 0))
-        if rk:
-            line3 += f" {C_REIKAKU}霊格:{rk}{C_RESET}"
+        rei_seg = (f"{C_REI}靈{C_REIKAKU}〔{rk}〕{C_REI} {rei:,}{C_RESET}" if rk
+                   else f"{C_REI}靈 {rei:,}{C_RESET}")
+        lines[1] += f" {C_DIM}⬩{C_RESET} {rei_seg}"
+        # buff 獨立成行，接在 xp 行下面（只有生效時才出現）。
         buff = active_buff_or_none(state)
         if buff:
             remain = max(0, int((buff["expires_at"] - time.time()) / 60))
-            line3 += (f"  {C_BUFF}{force_emoji(buff['icon'])} {buff['name']} "
-                      f"{buff['mult']:g}x {remain}m{C_RESET}")
-    return line2, line3
+            lines.append(f"{C_BUFF}{force_emoji(buff['icon'])} {buff['name']} "
+                         f"{buff['mult']:g}x {remain}m{C_RESET}")
+    return lines
 
 
 # ════════════════════════ 狀態 / 設定 / 引擎 / 商店 ════════════════════════
@@ -828,6 +807,18 @@ def cmd_install(no_hook=False):
     if os.path.exists(settings_path):
         shutil.copyfile(settings_path, settings_path + ".cc-xp.bak")
 
+    # 非破壞性包裝：記下使用者原本的 statusLine，render 時先跑它、把輸出接在最上面。
+    # 只在原指令不是 cc-xp 自己時才捕捉（重裝時保留先前記下的，避免吃到自己→遞迴）。
+    wrapped_note = "（無原 statusLine，僅輸出 cc-xp 兩行）"
+    prev = settings.get("statusLine")
+    if isinstance(prev, dict) and "xp-statusline.py" not in (prev.get("command") or ""):
+        cfg = load_config()
+        cfg["wrapped_statusline"] = prev
+        save_config(cfg)
+        wrapped_note = "已記下你原本的 statusLine，會接在最上面"
+    elif isinstance(load_config().get("wrapped_statusline"), dict):
+        wrapped_note = "沿用先前記下的原 statusLine"
+
     settings["statusLine"] = {"type": "command", "command": f'"{py}" "{stable}"', "padding": 0}
     hook_added = False
     if not no_hook:
@@ -854,6 +845,7 @@ def cmd_install(no_hook=False):
     print("✅ cc-xp 安裝完成")
     print(f"  腳本        ：{stable}")
     print(f"  statusLine  ：已寫入 {settings_path}（備份 .cc-xp.bak）")
+    print(f"  原 statusLine：{wrapped_note}")
     print(f"  事件 hook   ：{'已加入' if hook_added else ('略過(--no-hook)' if no_hook else '已存在')}")
     print(f"  cc-xp 指令  ：{launcher_note}")
     print("  → 重開終端讓 cc-xp 生效；重啟 Claude Code 讓 statusLine/hook 生效")
@@ -908,18 +900,6 @@ def main():
 
     # ── 預設：render statusline ──
     raw = sys.stdin.read()
-    try:
-        data = json.loads(raw) if raw.strip() else {}
-    except (json.JSONDecodeError, ValueError):
-        data = {}
-
-    cw = data.get("context_window") or {}
-    rl = data.get("rate_limits") or {}
-    meta = {
-        "ctx": _pct_str(cw.get("used_percentage")),
-        "five": _pct_str((rl.get("five_hour") or {}).get("used_percentage")),
-        "weekly": _pct_str((rl.get("seven_day") or {}).get("used_percentage")),
-    }
 
     cfg = load_config()
     events_on = bool(cfg.get("events_enabled", True))
@@ -927,10 +907,12 @@ def main():
     equipped = state["equipped"] if events_on else dict(DEFAULT_EQUIPPED)
 
     xp = get_lifetime_tokens()
-    l2, l3 = render_xp_lines(xp, meta, equipped, events_on, state)
+    cc_lines = render_xp_lines(xp, equipped, events_on, state)
 
-    sep = "\n" * (1 + max(0, LINE_SPACING))
-    sys.stdout.write(sep.join([build_line1(data), l2, l3]))
+    # 使用者原本的 statusLine（若有）接最上面，cc-xp 各行附其下；沒有就只輸出 cc-xp 行。
+    l1 = wrapped_line1(raw, cfg)
+    lines = ([l1] if l1 is not None else []) + cc_lines
+    sys.stdout.write("\n".join(lines))
 
 
 if __name__ == "__main__":
